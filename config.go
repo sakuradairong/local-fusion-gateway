@@ -11,15 +11,16 @@ const defaultMaxBodyBytes int64 = 2 * 1024 * 1024
 
 // Config holds all configuration for the fusion gateway.
 type Config struct {
-	Listen         string       `yaml:"listen"`
-	VirtualModel   string       `yaml:"virtual_model"`
-	TimeoutSeconds int          `yaml:"timeout_seconds"`
-	AuthTokenEnv   string       `yaml:"auth_token_env"`
-	MaxBodyBytes   int64        `yaml:"max_body_bytes"`
-	Debug          DebugConfig  `yaml:"debug"`
-	Providers      []Provider   `yaml:"providers"`
-	Panel          []PanelEntry `yaml:"panel"`
-	Synthesizer    Synthesizer  `yaml:"synthesizer"`
+	Listen         string        `yaml:"listen"`
+	VirtualModel   string        `yaml:"virtual_model"`
+	TimeoutSeconds int           `yaml:"timeout_seconds"`
+	AuthTokenEnv   string        `yaml:"auth_token_env"`
+	MaxBodyBytes   int64         `yaml:"max_body_bytes"`
+	Debug          DebugConfig   `yaml:"debug"`
+	AgentProfiles  AgentProfiles `yaml:"agent_profiles"`
+	Providers      []Provider    `yaml:"providers"`
+	Panel          []PanelEntry  `yaml:"panel"`
+	Synthesizer    Synthesizer   `yaml:"synthesizer"`
 }
 
 // DebugConfig controls optional per-request debug artifacts.
@@ -27,6 +28,23 @@ type DebugConfig struct {
 	Enabled        bool   `yaml:"enabled"`
 	Dir            string `yaml:"dir"`
 	CaptureContent bool   `yaml:"capture_content"`
+}
+
+// AgentProfiles defines per-coding-agent passthrough targets.
+type AgentProfiles struct {
+	Pi AgentProfile `yaml:"pi"`
+}
+
+// AgentProfile defines a single agent passthrough profile.
+type AgentProfile struct {
+	Provider string `yaml:"provider"`
+	Model    string `yaml:"model"`
+	Mode     string `yaml:"mode"`
+}
+
+// Enabled reports whether the profile has a dedicated target.
+func (p AgentProfile) Enabled() bool {
+	return p.Provider != "" || p.Model != "" || p.Mode != ""
 }
 
 // Provider defines an upstream LLM provider.
@@ -86,6 +104,9 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Synthesizer.Provider == "" || cfg.Synthesizer.Model == "" {
 		return nil, fmt.Errorf("config: synthesizer provider and model are required")
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
 }
 
@@ -139,6 +160,25 @@ func (c *Config) Validate() error {
 	}
 	if c.Synthesizer.Model == "" {
 		return fmt.Errorf("synthesizer has no model set")
+	}
+	if err := validateAgentProfile("pi", c.AgentProfiles.Pi, knownProviders); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateAgentProfile(name string, profile AgentProfile, knownProviders map[string]bool) error {
+	if !profile.Enabled() {
+		return nil
+	}
+	if profile.Provider == "" || profile.Model == "" {
+		return fmt.Errorf("agent profile %q requires provider and model", name)
+	}
+	if !knownProviders[profile.Provider] {
+		return fmt.Errorf("agent profile %q references unknown provider %q", name, profile.Provider)
+	}
+	if profile.Mode != "" && profile.Mode != "passthrough" {
+		return fmt.Errorf("agent profile %q has unsupported mode %q", name, profile.Mode)
 	}
 	return nil
 }

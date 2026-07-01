@@ -11,7 +11,7 @@ This is enough for basic prompt/response clients and for coding agents that can 
 
 | Agent | Current status | Native protocol expected by agent | Can point to current gateway? | Notes |
 |---|---:|---|---:|---|
-| pi (earendil-works/pi) | Supported for OpenAI Chat Completions passthrough | `openai-completions`, `openai-responses`, `anthropic-messages` | Yes, via `openai-completions` | If the request contains `tools`, `tool_choice`, tool messages, `tool_calls`, or `stream=true`, the gateway bypasses Fusion and proxies to the configured synthesizer model so pi can run its own tool loop. |
+| pi (earendil-works/pi) | Supported for OpenAI Chat Completions passthrough | `openai-completions`, `openai-responses`, `anthropic-messages` | Yes, via `openai-completions` | If the request contains `tools`, `tool_choice`, tool messages, `tool_calls`, or `stream=true`, the gateway bypasses Fusion and proxies to `agent_profiles.pi`; if that profile is omitted, it falls back to the synthesizer model so pi can run its own tool loop. |
 | omp (Oh My Pi) | Partial | `openai-completions`, `openai-responses`, `anthropic-messages`, proxy discovery | Yes, for `openai-completions` non-stream/simple use | OMP can discover `/v1/models`, but full agent loops need tools/streaming. |
 | OpenCode | Partial | AI SDK providers, OpenAI-compatible providers | Likely yes for simple chat-style model calls | Full support needs OpenCode custom provider validation and streaming/tool schema compatibility. |
 | Codex CLI | Not yet | OpenAI **Responses API** (`/v1/responses`) | No | Codex custom providers now require `wire_api = "responses"`; this gateway does not implement Responses API yet. |
@@ -71,7 +71,7 @@ export LOCAL_FUSION_API_KEY="change-me-long-random-token"
 pi -p --model local-fusion/local/fusion --api-key "$LOCAL_FUSION_API_KEY" "Summarize this repo architecture."
 ```
 
-With this setup, pi tool-loop requests (`tools`, `tool_choice`, tool messages, `stream=true`) are proxied directly to the configured synthesizer model. Plain non-tool prompts still use Fusion mode by default.
+With this setup, pi tool-loop requests (`tools`, `tool_choice`, tool messages, `stream=true`) are proxied directly to the configured `agent_profiles.pi` target, falling back to the synthesizer model. Plain non-tool prompts still use Fusion mode by default.
 
 ## omp Configuration
 

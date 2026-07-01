@@ -28,6 +28,9 @@ type passthroughTarget struct {
 }
 
 func (f *FusionService) defaultPassthroughTarget() passthroughTarget {
+	if f.config.AgentProfiles.Pi.Enabled() {
+		return passthroughTarget{Provider: f.config.AgentProfiles.Pi.Provider, Model: f.config.AgentProfiles.Pi.Model}
+	}
 	return passthroughTarget{Provider: f.config.Synthesizer.Provider, Model: f.config.Synthesizer.Model}
 }
 

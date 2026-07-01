@@ -39,6 +39,7 @@ cp config.example.yaml config.yaml
 | `providers` | List of upstream LLM providers with name, `base_url`, and optional `api_key_env` |
 | `panel` | Models to query in parallel (each references a provider) |
 | `synthesizer` | Model used to synthesize panel outputs |
+| `agent_profiles.pi` | Optional dedicated passthrough provider/model for pi-style agent tool/stream requests. If omitted, the synthesizer target is used. |
 
 ### API Keys via Environment Variables
 

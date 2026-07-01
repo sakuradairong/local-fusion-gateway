@@ -215,3 +215,35 @@ func TestConfigValidateUnknownProviderInSynthesizer(t *testing.T) {
 		t.Error("expected error for unknown synthesizer provider")
 	}
 }
+
+func TestConfigValidateAgentProfile(t *testing.T) {
+	base := Config{
+		Providers:   []Provider{{Name: "p1", BaseURL: "http://localhost:8080/v1"}},
+		Panel:       []PanelEntry{{Provider: "p1", Model: "m1"}},
+		Synthesizer: Synthesizer{Provider: "p1", Model: "s1"},
+	}
+
+	valid := base
+	valid.AgentProfiles.Pi = AgentProfile{Provider: "p1", Model: "agent-model", Mode: "passthrough"}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("expected valid pi agent profile, got %v", err)
+	}
+
+	missingModel := base
+	missingModel.AgentProfiles.Pi = AgentProfile{Provider: "p1", Mode: "passthrough"}
+	if err := missingModel.Validate(); err == nil {
+		t.Fatal("expected error for missing pi profile model")
+	}
+
+	unknownProvider := base
+	unknownProvider.AgentProfiles.Pi = AgentProfile{Provider: "missing", Model: "agent-model"}
+	if err := unknownProvider.Validate(); err == nil {
+		t.Fatal("expected error for unknown pi profile provider")
+	}
+
+	badMode := base
+	badMode.AgentProfiles.Pi = AgentProfile{Provider: "p1", Model: "agent-model", Mode: "fusion"}
+	if err := badMode.Validate(); err == nil {
+		t.Fatal("expected error for unsupported pi profile mode")
+	}
+}

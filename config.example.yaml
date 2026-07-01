@@ -25,6 +25,15 @@ debug:
 # code_research is request-level JSON, not a global config field. It only exposes
 # controlled read-only tools under an absolute workdir; no arbitrary shell or writes.
 
+# Optional coding-agent passthrough targets. The pi profile is used when requests
+# contain tools/tool_choice/tool messages/tool_calls or stream=true. If omitted,
+# the synthesizer target is used for agent passthrough.
+agent_profiles:
+  pi:
+    provider: "openrouter"
+    model: "openai/gpt-4o"
+    mode: "passthrough"
+
 providers:
   - name: "openrouter"
     base_url: "https://openrouter.ai/api/v1"

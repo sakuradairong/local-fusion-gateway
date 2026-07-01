@@ -202,9 +202,13 @@ func TestStreamPassthrough(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := &Config{
-		Providers:   []Provider{{Name: "fake", BaseURL: upstream.URL}},
-		Panel:       []PanelEntry{{Provider: "fake", Model: "panel"}},
-		Synthesizer: Synthesizer{Provider: "fake", Model: "agent-model"},
+		Providers: []Provider{{Name: "fake", BaseURL: upstream.URL}},
+		Panel:     []PanelEntry{{Provider: "fake", Model: "panel"}},
+		Synthesizer: Synthesizer{
+			Provider: "fake",
+			Model:    "synth-model-should-not-be-used-for-agent",
+		},
+		AgentProfiles: AgentProfiles{Pi: AgentProfile{Provider: "fake", Model: "agent-model", Mode: "passthrough"}},
 	}
 	ts := httptest.NewServer(NewServer(cfg).Handler())
 	defer ts.Close()
@@ -256,9 +260,13 @@ func TestToolRequestPassthroughPreservesAgentFields(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := &Config{
-		Providers:   []Provider{{Name: "fake", BaseURL: upstream.URL}},
-		Panel:       []PanelEntry{{Provider: "fake", Model: "panel"}},
-		Synthesizer: Synthesizer{Provider: "fake", Model: "agent-model"},
+		Providers: []Provider{{Name: "fake", BaseURL: upstream.URL}},
+		Panel:     []PanelEntry{{Provider: "fake", Model: "panel"}},
+		Synthesizer: Synthesizer{
+			Provider: "fake",
+			Model:    "synth-model-should-not-be-used-for-agent",
+		},
+		AgentProfiles: AgentProfiles{Pi: AgentProfile{Provider: "fake", Model: "agent-model", Mode: "passthrough"}},
 	}
 	ts := httptest.NewServer(NewServer(cfg).Handler())
 	defer ts.Close()
