@@ -80,7 +80,7 @@ func (f *FusionService) ProcessWithRun(ctx context.Context, req *ChatCompletionR
 	}
 
 	// Phase 1: Query all panel models in parallel.
-	results := f.queryPanel(ctx, req.Messages, researchConfig)
+	results := f.queryPanel(ctx, req, researchConfig)
 	debugRun.Panel = summarizePanelResults(results, f.config.Debug.CaptureContent)
 	if researchConfig != nil {
 		debugRun.CodeResearch.Panels = summarizeCodeResearchPanels(results)
@@ -129,7 +129,7 @@ func (f *FusionService) ProcessWithRun(ctx context.Context, req *ChatCompletionR
 }
 
 // queryPanel fans out the request to all panel models in parallel.
-func (f *FusionService) queryPanel(ctx context.Context, messages []Message, researchConfig *CodeResearchConfig) []panelResult {
+func (f *FusionService) queryPanel(ctx context.Context, req *ChatCompletionRequest, researchConfig *CodeResearchConfig) []panelResult {
 	results := make([]panelResult, len(f.config.Panel))
 	var wg sync.WaitGroup
 
@@ -139,9 +139,9 @@ func (f *FusionService) queryPanel(ctx context.Context, messages []Message, rese
 			defer wg.Done()
 			var result panelResult
 			if researchConfig != nil {
-				result = f.queryPanelWithCodeResearch(ctx, entry, messages, *researchConfig)
+				result = f.queryPanelWithCodeResearch(ctx, entry, req.Messages, req.Extra, *researchConfig)
 			} else {
-				callResult := f.callUpstream(ctx, entry.Provider, entry.Model, messages)
+				callResult := f.callUpstream(ctx, entry.Provider, entry.Model, req.Messages, req.Extra)
 				result = panelResult{
 					Provider:   callResult.Provider,
 					Model:      callResult.Model,
@@ -159,7 +159,7 @@ func (f *FusionService) queryPanel(ctx context.Context, messages []Message, rese
 }
 
 // callUpstream sends a chat completion request to a single upstream provider.
-func (f *FusionService) callUpstream(ctx context.Context, providerName, model string, messages []Message) upstreamCallResult {
+func (f *FusionService) callUpstream(ctx context.Context, providerName, model string, messages []Message, extra map[string]json.RawMessage) upstreamCallResult {
 	result := upstreamCallResult{Provider: providerName, Model: model}
 
 	prov, ok := f.config.GetProvider(providerName)
@@ -169,6 +169,7 @@ func (f *FusionService) callUpstream(ctx context.Context, providerName, model st
 	}
 
 	payload := ChatCompletionRequest{
+		Extra:    extra,
 		Model:    model,
 		Messages: messages,
 		Stream:   false,
@@ -239,7 +240,7 @@ func (f *FusionService) synthesize(ctx context.Context, originalReq *ChatComplet
 		},
 	}
 
-	callResult := f.callUpstream(ctx, f.config.Synthesizer.Provider, f.config.Synthesizer.Model, synthMessages)
+	callResult := f.callUpstream(ctx, f.config.Synthesizer.Provider, f.config.Synthesizer.Model, synthMessages, originalReq.Extra)
 	summary := DebugUpstreamSummary{
 		Provider: callResult.Provider,
 		Model:    callResult.Model,
@@ -282,7 +283,7 @@ func buildSynthesizerPrompt(userMessages []Message, panelResults []panelResult) 
 	// Include original user messages.
 	sb.WriteString("USER'S QUESTION:\n")
 	for _, msg := range userMessages {
-		sb.WriteString(fmt.Sprintf("[%s]: %s\n", msg.Role, msg.Content))
+		sb.WriteString(fmt.Sprintf("[%s]: %s\n", msg.Role, msg.ContentString()))
 	}
 
 	sb.WriteString("\nPANEL MODEL RESPONSES:\n")

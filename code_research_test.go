@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -221,4 +222,69 @@ func newRecordingFakeUpstream(handler func(ChatCompletionRequest) fakeResponse) 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(upstreamResponse{Choices: []upstreamChoice{{Message: Message{Role: "assistant", Content: resp.Content}}}})
 	}))
+}
+
+func TestCodeResearchReadFileRejectsSymlink(t *testing.T) {
+	workdir := t.TempDir()
+	outsideDir := t.TempDir()
+	outside := filepath.Join(outsideDir, "outside.go")
+	if err := os.WriteFile(outside, []byte("package secret\n"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	link := filepath.Join(workdir, "link.go")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	session := mustCodeResearchSession(t, CodeResearchConfig{
+		Enabled:       true,
+		Workdir:       workdir,
+		MaxRounds:     1,
+		MaxFileBytes:  1024,
+		MaxTotalBytes: 4096,
+	})
+
+	result := session.readFile("link.go", 0, 20)
+	if !strings.Contains(result, "ERROR") || !strings.Contains(result, "symlink") {
+		t.Fatalf("expected symlink rejection, got %q", result)
+	}
+	if strings.Contains(result, "package secret") || strings.Contains(result, "secret") {
+		t.Fatalf("symlink target content leaked: %q", result)
+	}
+}
+
+func TestRunFixedGitDiffTruncatesLargeOutput(t *testing.T) {
+	workdir := t.TempDir()
+	if err := exec.Command("git", "init", "-q", workdir).Run(); err != nil {
+		t.Fatalf("git init failed: %v", err)
+	}
+	if err := exec.Command("git", "-C", workdir, "config", "user.email", "test@example.com").Run(); err != nil {
+		t.Fatalf("git config email: %v", err)
+	}
+	if err := exec.Command("git", "-C", workdir, "config", "user.name", "Test").Run(); err != nil {
+		t.Fatalf("git config name: %v", err)
+	}
+
+	content := strings.Repeat("a", 2000)
+	if err := os.WriteFile(filepath.Join(workdir, "large.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write large file: %v", err)
+	}
+	if err := exec.Command("git", "-C", workdir, "add", "large.txt").Run(); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	if err := exec.Command("git", "-C", workdir, "commit", "-q", "-m", "initial").Run(); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "large.txt"), []byte(strings.Repeat("b", 2000)), 0o644); err != nil {
+		t.Fatalf("modify large file: %v", err)
+	}
+
+	ctx := context.Background()
+	result := runFixedGitDiff(ctx, workdir, 500)
+	if len(result) > 700 {
+		t.Fatalf("expected truncated output, got length %d: %q", len(result), result)
+	}
+	if !strings.Contains(result, "[truncated") {
+		t.Fatalf("expected truncation marker, got %q", result)
+	}
 }

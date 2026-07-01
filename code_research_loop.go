@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func (f *FusionService) queryPanelWithCodeResearch(ctx context.Context, entry PanelEntry, originalMessages []Message, config CodeResearchConfig) panelResult {
+func (f *FusionService) queryPanelWithCodeResearch(ctx context.Context, entry PanelEntry, originalMessages []Message, extra map[string]json.RawMessage, config CodeResearchConfig) panelResult {
 	debugPanel := DebugCodeResearchPanel{Provider: entry.Provider, Model: entry.Model}
 	session, err := newCodeResearchSession(config)
 	if err != nil {
@@ -26,7 +26,7 @@ func (f *FusionService) queryPanelWithCodeResearch(ctx context.Context, entry Pa
 
 	var lastStatus int
 	for round := 1; round <= session.config.MaxRounds; round++ {
-		callResult := f.callUpstream(ctx, entry.Provider, entry.Model, researchMessages)
+		callResult := f.callUpstream(ctx, entry.Provider, entry.Model, researchMessages, extra)
 		lastStatus = callResult.StatusCode
 		if callResult.Err != nil {
 			return panelResult{
@@ -64,7 +64,7 @@ func (f *FusionService) queryPanelWithCodeResearch(ctx context.Context, entry Pa
 		Role:    "user",
 		Content: "Maximum research rounds reached. Do not call more tools. Based only on the tool evidence already provided and the user's question, return JSON exactly in this shape: {\"final\":\"your answer with a 证据文件 section listing cited file paths and line numbers\"}.",
 	})
-	callResult := f.callUpstream(ctx, entry.Provider, entry.Model, finalMessages)
+	callResult := f.callUpstream(ctx, entry.Provider, entry.Model, finalMessages, extra)
 	if callResult.StatusCode != 0 {
 		lastStatus = callResult.StatusCode
 	}
@@ -97,7 +97,7 @@ func buildCodeResearchMessages(originalMessages []Message, config CodeResearchCo
 	prompt.WriteString(fmt.Sprintf("LIMITS: max_rounds=%d max_file_bytes=%d max_total_bytes=%d\n\n", config.MaxRounds, config.MaxFileBytes, config.MaxTotalBytes))
 	prompt.WriteString("USER CONVERSATION:\n")
 	for _, msg := range originalMessages {
-		prompt.WriteString(fmt.Sprintf("[%s]: %s\n", msg.Role, msg.Content))
+		prompt.WriteString(fmt.Sprintf("[%s]: %s\n", msg.Role, msg.ContentString()))
 	}
 
 	return []Message{{Role: "user", Content: prompt.String()}}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,12 +13,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
 	defaultCodeResearchMaxRounds     = 4
 	defaultCodeResearchMaxFileBytes  = 20_000
 	defaultCodeResearchMaxTotalBytes = 80_000
+
+	gitDiffTimeout  = 30 * time.Second
+	maxGitDiffBytes = 2 * 1024 * 1024
 )
 
 type codeResearchSession struct {
@@ -220,8 +225,10 @@ func (s *codeResearchSession) gitDiff() string {
 	if !s.config.IncludeGitDiff {
 		return s.applyOutputBudget("ERROR: git_diff is disabled for this request.\n")
 	}
-	stat := runFixedGitDiff(s.config.Workdir, "--stat")
-	diff := runFixedGitDiff(s.config.Workdir)
+	ctx, cancel := context.WithTimeout(context.Background(), gitDiffTimeout)
+	defer cancel()
+	stat := runFixedGitDiff(ctx, s.config.Workdir, maxGitDiffBytes, "--stat")
+	diff := runFixedGitDiff(ctx, s.config.Workdir, maxGitDiffBytes)
 	text := "git diff --stat:\n" + stat + "\n\ngit diff:\n" + diff
 	return s.applyOutputBudget(text)
 }
@@ -242,7 +249,26 @@ func (s *codeResearchSession) resolveReadablePath(input string) (string, string,
 	if !isWithinDir(s.config.Workdir, abs) {
 		return "", "", fmt.Errorf("read_file path is outside workdir: %q", input)
 	}
-	rel, err := filepath.Rel(s.config.Workdir, abs)
+	// Reject the target if the path itself is a symbolic link. This prevents
+	// symlink-based escape attacks even if the link points inside the workdir.
+	linfo, err := os.Lstat(abs)
+	if err != nil {
+		return "", "", fmt.Errorf("read_file stat failed: %w", err)
+	}
+	if linfo.Mode()&os.ModeSymlink != 0 {
+		return "", "", fmt.Errorf("read_file refused symlink: %q", input)
+	}
+	// Resolve any symlinks in the path and verify the canonical path is still
+	// contained within the workdir.
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", "", fmt.Errorf("read_file path resolution failed: %w", err)
+	}
+	resolved = filepath.Clean(resolved)
+	if !isWithinDir(s.config.Workdir, resolved) {
+		return "", "", fmt.Errorf("read_file path is outside workdir: %q", input)
+	}
+	rel, err := filepath.Rel(s.config.Workdir, resolved)
 	if err != nil {
 		return "", "", fmt.Errorf("read_file path is outside workdir: %q", input)
 	}
@@ -250,14 +276,14 @@ func (s *codeResearchSession) resolveReadablePath(input string) (string, string,
 	if shouldSkipFile(rel) {
 		return "", "", fmt.Errorf("read_file refused sensitive or unsupported file: %q", rel)
 	}
-	info, err := os.Stat(abs)
+	info, err := os.Stat(resolved)
 	if err != nil {
 		return "", "", fmt.Errorf("read_file stat failed: %w", err)
 	}
 	if info.IsDir() {
 		return "", "", fmt.Errorf("read_file path is a directory: %q", rel)
 	}
-	return abs, rel, nil
+	return resolved, rel, nil
 }
 
 func (s *codeResearchSession) applyOutputBudget(text string) string {
@@ -380,14 +406,37 @@ func isWithinDir(root string, path string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
-func runFixedGitDiff(workdir string, args ...string) string {
-	gitArgs := append([]string{"-C", workdir, "diff"}, args...)
-	cmd := exec.Command("git", gitArgs...)
-	out, err := cmd.CombinedOutput()
+func runFixedGitDiff(ctx context.Context, workdir string, maxBytes int, args ...string) string {
+	if maxBytes <= 0 {
+		maxBytes = maxGitDiffBytes
+	}
+	gitArgs := append([]string{"-C", workdir, "diff", "--no-ext-diff"}, args...)
+	ctx, cancel := context.WithTimeout(ctx, gitDiffTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", gitArgs...)
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return "ERROR: git diff failed: " + err.Error() + "\n"
 	}
-	return string(out)
+	cmd.Stderr = cmd.Stdout
+	if err := cmd.Start(); err != nil {
+		return "ERROR: git diff failed: " + err.Error() + "\n"
+	}
+	var buf strings.Builder
+	_, copyErr := io.CopyN(&buf, stdout, int64(maxBytes)+1)
+	if buf.Len() > maxBytes {
+		cancel()
+		_ = cmd.Wait()
+		return buf.String()[:maxBytes] + "\n[truncated: git diff output exceeded max bytes]\n"
+	}
+	if copyErr != nil && !errors.Is(copyErr, io.EOF) {
+		_ = cmd.Wait()
+		return "ERROR: git diff failed: " + copyErr.Error() + "\n"
+	}
+	if err := cmd.Wait(); err != nil {
+		return "ERROR: git diff failed: " + err.Error() + "\n"
+	}
+	return buf.String()
 }
 
 func parseCodeResearchResponse(content string) (codeResearchModelResponse, bool) {

@@ -82,6 +82,26 @@ type Message struct {
 	Extra      map[string]json.RawMessage `json:"-"`
 }
 
+const contentStringMaxLen = 2000
+
+// ContentString returns a readable string representation of the message
+// content. If Content is set it is returned directly. Otherwise, if
+// ContentRaw is non-empty, the raw JSON is returned as a string (truncated
+// and marked when it exceeds contentStringMaxLen).
+func (m Message) ContentString() string {
+	if m.Content != "" {
+		return m.Content
+	}
+	if len(m.ContentRaw) > 0 {
+		s := string(m.ContentRaw)
+		if len(s) > contentStringMaxLen {
+			return s[:contentStringMaxLen] + " [truncated]"
+		}
+		return s
+	}
+	return ""
+}
+
 func (m *Message) UnmarshalJSON(data []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {

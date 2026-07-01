@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -13,7 +15,7 @@ import (
 // newFakeUpstream creates an httptest server that mimics an OpenAI-compatible
 // chat completions endpoint, returning the given responses in order.
 func newFakeUpstream(responses []fakeResponse) *httptest.Server {
-	callCount := 0
+	var callCount atomic.Int32
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/completions" {
 			w.WriteHeader(http.StatusNotFound)
@@ -30,8 +32,7 @@ func newFakeUpstream(responses []fakeResponse) *httptest.Server {
 			return
 		}
 
-		idx := callCount
-		callCount++
+		idx := int(callCount.Add(1) - 1)
 		if idx >= len(responses) {
 			// Return a default error if we run out of responses.
 			w.WriteHeader(http.StatusInternalServerError)
@@ -64,6 +65,57 @@ func newFakeUpstream(responses []fakeResponse) *httptest.Server {
 	}))
 }
 
+// newFakeUpstreamByModel creates an httptest server that returns a response
+// based on the model field in the request, avoiding ordering assumptions when
+// multiple panels are called concurrently.
+func newFakeUpstreamByModel(responses map[string]fakeResponse) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req ChatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		resp, ok := responses[req.Model]
+		if !ok {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "unknown model " + req.Model})
+			return
+		}
+
+		if resp.StatusCode != 0 && resp.StatusCode != http.StatusOK {
+			w.WriteHeader(resp.StatusCode)
+			if resp.Body != "" {
+				w.Write([]byte(resp.Body))
+			}
+			return
+		}
+
+		upResp := upstreamResponse{
+			Choices: []upstreamChoice{
+				{
+					Message: Message{
+						Role:    "assistant",
+						Content: resp.Content,
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(upResp)
+	}))
+}
+
 type fakeResponse struct {
 	Content    string
 	StatusCode int
@@ -71,11 +123,11 @@ type fakeResponse struct {
 }
 
 func TestFusionAllPanelsSucceed(t *testing.T) {
-	// Create a fake upstream that serves both panel and synthesizer.
-	upstream := newFakeUpstream([]fakeResponse{
-		{Content: "Panel model A says: Paris is the capital of France."},
-		{Content: "Panel model B says: The capital of France is Paris, known as the City of Light."},
-		{Content: "Synthesized: Paris is indeed the capital of France, and it is known as the City of Light."},
+	// Use a model-based fake upstream so concurrent panel order does not matter.
+	upstream := newFakeUpstreamByModel(map[string]fakeResponse{
+		"model-a":     {Content: "Panel model A says: Paris is the capital of France."},
+		"model-b":     {Content: "Panel model B says: The capital of France is Paris, known as the City of Light."},
+		"model-synth": {Content: "Synthesized: Paris is indeed the capital of France, and it is known as the City of Light."},
 	})
 	defer upstream.Close()
 
@@ -159,10 +211,10 @@ func TestFusionNoPanelSuccess(t *testing.T) {
 
 func TestFusionPartialSuccess(t *testing.T) {
 	// First panel fails, second panel succeeds, synthesizer succeeds.
-	upstream := newFakeUpstream([]fakeResponse{
-		{StatusCode: http.StatusInternalServerError, Body: "crash"},
-		{Content: "The answer is 42."},
-		{Content: "Synthesized: The answer is 42."},
+	upstream := newFakeUpstreamByModel(map[string]fakeResponse{
+		"model-broken": {StatusCode: http.StatusInternalServerError, Body: "crash"},
+		"model-ok":     {Content: "The answer is 42."},
+		"model-synth":  {Content: "Synthesized: The answer is 42."},
 	})
 	defer upstream.Close()
 
@@ -317,6 +369,94 @@ func TestEstimateTokens(t *testing.T) {
 		got := estimateTokens(tt.text)
 		if got != tt.expected {
 			t.Errorf("estimateTokens(%q) = %d, want %d", tt.text, got, tt.expected)
+		}
+	}
+}
+
+func TestBuildSynthesizerPromptIncludesContentRaw(t *testing.T) {
+	panelResults := []panelResult{
+		{Provider: "p1", Model: "m1", Content: "The sky is blue."},
+	}
+	userMessages := []Message{
+		{Role: "user", ContentRaw: json.RawMessage(`[{"type":"text","text":"Why is the sky blue?"}]`)},
+	}
+	prompt := buildSynthesizerPrompt(userMessages, panelResults)
+	if !strings.Contains(prompt, `[{"type":"text","text":"Why is the sky blue?"}]`) {
+		t.Errorf("synthesizer prompt missing ContentRaw value; prompt:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Why is the sky blue?") {
+		t.Errorf("synthesizer prompt missing user message; prompt:\n%s", prompt)
+	}
+}
+
+func TestBuildCodeResearchMessagesIncludesContentRaw(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", ContentRaw: json.RawMessage(`[{"type":"text","text":"hello"}]`)},
+	}
+	messages := buildCodeResearchMessages(msgs, CodeResearchConfig{Workdir: "/tmp"})
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(messages))
+	}
+	if !strings.Contains(messages[0].Content, `[{"type":"text","text":"hello"}]`) {
+		t.Errorf("code research prompt missing ContentRaw value; prompt:\n%s", messages[0].Content)
+	}
+}
+
+func TestFusionPreservesExtraParameters(t *testing.T) {
+	var capturedExtras []map[string]json.RawMessage
+	var mu sync.Mutex
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req ChatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		capturedExtras = append(capturedExtras, req.Extra)
+		mu.Unlock()
+
+		upResp := upstreamResponse{
+			Choices: []upstreamChoice{
+				{Message: Message{Role: "assistant", Content: "ok"}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(upResp)
+	}))
+	defer upstream.Close()
+
+	cfg := &Config{
+		VirtualModel:   "local/fusion",
+		TimeoutSeconds: 10,
+		Providers:      []Provider{{Name: "fake", BaseURL: upstream.URL}},
+		Panel:          []PanelEntry{{Provider: "fake", Model: "panel"}},
+		Synthesizer:    Synthesizer{Provider: "fake", Model: "synth"},
+	}
+	req := &ChatCompletionRequest{
+		Model: "local/fusion",
+		Messages: []Message{
+			{Role: "user", Content: "hello"},
+		},
+		Extra: map[string]json.RawMessage{
+			"temperature": json.RawMessage(`0.7`),
+		},
+	}
+
+	_, err := NewFusionService(cfg).Process(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Process failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(capturedExtras) != 2 {
+		t.Fatalf("expected 2 upstream calls, got %d", len(capturedExtras))
+	}
+	for i, extra := range capturedExtras {
+		if extra == nil || string(extra["temperature"]) != "0.7" {
+			t.Errorf("call %d missing temperature extra, got %v", i, extra)
 		}
 	}
 }
