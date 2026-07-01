@@ -1,0 +1,12 @@
+# Future template for ~/.codex/config.toml.
+# Not currently supported because local-fusion-gateway does not implement /v1/responses yet.
+
+model = "local/fusion"
+model_provider = "local_fusion"
+model_reasoning_effort = "medium"
+
+[model_providers.local_fusion]
+name = "Local Fusion Gateway"
+base_url = "http://127.0.0.1:8080/v1"
+env_key = "LOCAL_FUSION_API_KEY"
+wire_api = "responses"

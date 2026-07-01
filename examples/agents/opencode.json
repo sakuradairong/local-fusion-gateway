@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "local-fusion/local/fusion",
+  "provider": {
+    "local-fusion": {
+      "models": {
+        "local/fusion": {
+          "name": "Local Fusion Gateway"
+        }
+      },
+      "options": {
+        "baseURL": "http://127.0.0.1:8080/v1",
+        "apiKey": "{env:LOCAL_FUSION_API_KEY}"
+      }
+    }
+  }
+}

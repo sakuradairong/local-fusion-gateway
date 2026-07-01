@@ -1,0 +1,28 @@
+# Example gateway config for using local-fusion-gateway as an advisory/review model.
+# Copy to config.yaml and set environment variables before running.
+
+listen: "127.0.0.1:8080"
+virtual_model: "local/fusion"
+timeout_seconds: 180
+auth_token_env: "LOCAL_FUSION_API_KEY"
+max_body_bytes: 2097152
+
+debug:
+  enabled: false
+  dir: "debug"
+  capture_content: false
+
+providers:
+  - name: "openrouter"
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: "OPENROUTER_API_KEY"
+
+panel:
+  - provider: "openrouter"
+    model: "openai/gpt-4o"
+  - provider: "openrouter"
+    model: "anthropic/claude-sonnet-4-20250514"
+
+synthesizer:
+  provider: "openrouter"
+  model: "openai/gpt-4o"

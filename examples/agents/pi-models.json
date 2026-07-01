@@ -1,0 +1,33 @@
+{
+  "providers": {
+    "local-fusion": {
+      "baseUrl": "http://127.0.0.1:8080/v1",
+      "apiKey": "$LOCAL_FUSION_API_KEY",
+      "api": "openai-completions",
+      "authHeader": true,
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "supportsStore": false,
+        "supportsUsageInStreaming": false,
+        "maxTokensField": "max_tokens"
+      },
+      "models": [
+        {
+          "id": "local/fusion",
+          "name": "Local Fusion Gateway",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 128000,
+          "maxTokens": 8192,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ]
+    }
+  }
+}

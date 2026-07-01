@@ -193,6 +193,26 @@ curl -s http://localhost:8080/v1/chat/completions \
   }' | jq .
 ```
 
+
+## Coding Agent Integration
+
+This project can already be used as an advisory/review model for coding agents through its OpenAI-compatible `/v1/chat/completions` endpoint and `code_research` mode.
+
+Full primary-backend support for agents such as Codex CLI and Claude Code requires additional wire protocols. See:
+
+- `docs/agent-integration.md`
+- `examples/agents/`
+
+Current practical status:
+
+| Agent | Status |
+|---|---|
+| pi | Partial: OpenAI Chat Completions advisory/review use |
+| omp | Partial: OpenAI Chat Completions advisory/review use |
+| OpenCode | Partial: simple OpenAI-compatible use, version-dependent |
+| Codex CLI | Future: needs `/v1/responses` |
+| Claude Code | Future: needs Anthropic `/v1/messages` |
+
 ## Production Running Suggestions
 
 - Set `auth_token_env` and export a long random token before exposing the
