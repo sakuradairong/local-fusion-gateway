@@ -1,0 +1,48 @@
+# local-fusion-gateway configuration
+# Copy this file to config.yaml and fill in your provider details.
+
+listen: ":8080"
+virtual_model: "local/fusion"
+timeout_seconds: 120
+
+# Optional local gateway auth. When set, /v1/models and
+# /v1/chat/completions require Authorization: Bearer $LOCAL_FUSION_API_KEY.
+# Leave empty to preserve unauthenticated local-only compatibility.
+auth_token_env: "LOCAL_FUSION_API_KEY"
+
+# Maximum POST /v1/chat/completions request body size. Default: 2 MiB.
+max_body_bytes: 2097152
+
+# Optional sanitized per-request debug artifacts. Disabled by default.
+debug:
+  enabled: false
+  dir: "debug"
+  # Keep false in production unless you explicitly need full prompt/response capture.
+  # When request-level code_research is enabled, tool metadata is recorded by default;
+  # full tool output content is recorded only when capture_content is true.
+  capture_content: false
+
+# code_research is request-level JSON, not a global config field. It only exposes
+# controlled read-only tools under an absolute workdir; no arbitrary shell or writes.
+
+providers:
+  - name: "openrouter"
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: "OPENROUTER_API_KEY"
+
+  - name: "ollama"
+    base_url: "http://localhost:11434/v1"
+    # no api_key_env needed for local Ollama
+    api_key_env: ""
+
+panel:
+  - provider: "openrouter"
+    model: "openai/gpt-4o"
+  - provider: "openrouter"
+    model: "anthropic/claude-sonnet-4-20250514"
+  - provider: "ollama"
+    model: "llama3"
+
+synthesizer:
+  provider: "openrouter"
+  model: "openai/gpt-4o"

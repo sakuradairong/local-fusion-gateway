@@ -1,0 +1,22 @@
+# build artifacts
+/local-fusion-gateway
+*.exe
+*.test
+
+# local configs and secrets
+config.yaml
+config.*.local.yaml
+.env
+.env.*
+*.key
+*.pem
+
+# debug/runtime output
+debug/
+runs/
+*.log
+
+# editor/os
+.DS_Store
+.vscode/
+.idea/

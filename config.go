@@ -1,0 +1,144 @@
+package main
+
+import (
+	"fmt"
+	"os"
+
+	"gopkg.in/yaml.v3"
+)
+
+const defaultMaxBodyBytes int64 = 2 * 1024 * 1024
+
+// Config holds all configuration for the fusion gateway.
+type Config struct {
+	Listen         string       `yaml:"listen"`
+	VirtualModel   string       `yaml:"virtual_model"`
+	TimeoutSeconds int          `yaml:"timeout_seconds"`
+	AuthTokenEnv   string       `yaml:"auth_token_env"`
+	MaxBodyBytes   int64        `yaml:"max_body_bytes"`
+	Debug          DebugConfig  `yaml:"debug"`
+	Providers      []Provider   `yaml:"providers"`
+	Panel          []PanelEntry `yaml:"panel"`
+	Synthesizer    Synthesizer  `yaml:"synthesizer"`
+}
+
+// DebugConfig controls optional per-request debug artifacts.
+type DebugConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	Dir            string `yaml:"dir"`
+	CaptureContent bool   `yaml:"capture_content"`
+}
+
+// Provider defines an upstream LLM provider.
+type Provider struct {
+	Name      string `yaml:"name"`
+	BaseURL   string `yaml:"base_url"`
+	APIKeyEnv string `yaml:"api_key_env"`
+}
+
+// PanelEntry maps a provider name to a specific model for the panel.
+type PanelEntry struct {
+	Provider string `yaml:"provider"`
+	Model    string `yaml:"model"`
+}
+
+// Synthesizer defines the model used to synthesize panel results.
+type Synthesizer struct {
+	Provider string `yaml:"provider"`
+	Model    string `yaml:"model"`
+}
+
+// WithDefaults returns a copy of the configuration with default values applied.
+func (c Config) WithDefaults() Config {
+	cfg := c
+	if cfg.Listen == "" {
+		cfg.Listen = ":8080"
+	}
+	if cfg.VirtualModel == "" {
+		cfg.VirtualModel = "local/fusion"
+	}
+	if cfg.TimeoutSeconds <= 0 {
+		cfg.TimeoutSeconds = 120
+	}
+	if cfg.MaxBodyBytes <= 0 {
+		cfg.MaxBodyBytes = defaultMaxBodyBytes
+	}
+	if cfg.Debug.Dir == "" {
+		cfg.Debug.Dir = "debug"
+	}
+	return cfg
+}
+
+// LoadConfig reads and parses a YAML configuration file.
+func LoadConfig(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config file: %w", err)
+	}
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	cfg = cfg.WithDefaults()
+	if len(cfg.Panel) == 0 {
+		return nil, fmt.Errorf("config: at least one panel entry is required")
+	}
+	if cfg.Synthesizer.Provider == "" || cfg.Synthesizer.Model == "" {
+		return nil, fmt.Errorf("config: synthesizer provider and model are required")
+	}
+	return &cfg, nil
+}
+
+// GetAPIKey reads the API key for a provider from the environment.
+func (c *Config) GetAPIKey(providerName string) string {
+	for _, p := range c.Providers {
+		if p.Name == providerName {
+			if p.APIKeyEnv != "" {
+				return os.Getenv(p.APIKeyEnv)
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+// GetAuthToken reads the local gateway bearer token from the configured environment variable.
+func (c *Config) GetAuthToken() string {
+	if c.AuthTokenEnv == "" {
+		return ""
+	}
+	return os.Getenv(c.AuthTokenEnv)
+}
+
+// GetProvider looks up a provider by name.
+func (c *Config) GetProvider(providerName string) (*Provider, bool) {
+	for i := range c.Providers {
+		if c.Providers[i].Name == providerName {
+			return &c.Providers[i], true
+		}
+	}
+	return nil, false
+}
+
+// Validate checks that the configuration references are correct.
+func (c *Config) Validate() error {
+	knownProviders := make(map[string]bool)
+	for _, p := range c.Providers {
+		knownProviders[p.Name] = true
+	}
+	for _, pe := range c.Panel {
+		if !knownProviders[pe.Provider] {
+			return fmt.Errorf("panel references unknown provider %q", pe.Provider)
+		}
+		if pe.Model == "" {
+			return fmt.Errorf("panel entry for provider %q has no model", pe.Provider)
+		}
+	}
+	if !knownProviders[c.Synthesizer.Provider] {
+		return fmt.Errorf("synthesizer references unknown provider %q", c.Synthesizer.Provider)
+	}
+	if c.Synthesizer.Model == "" {
+		return fmt.Errorf("synthesizer has no model set")
+	}
+	return nil
+}
