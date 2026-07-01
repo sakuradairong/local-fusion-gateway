@@ -15,7 +15,7 @@
       "models": [
         {
           "id": "local/fusion",
-          "name": "Local Fusion Gateway",
+          "name": "Local Fusion Gateway (pi passthrough)",
           "reasoning": false,
           "input": ["text"],
           "contextWindow": 128000,

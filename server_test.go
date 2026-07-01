@@ -179,8 +179,34 @@ func TestModelsEndpointAuthorized(t *testing.T) {
 	}
 }
 
-func TestStreamUnsupported(t *testing.T) {
-	ts := newTestServer()
+func TestStreamPassthrough(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if req["model"] != "agent-model" || req["stream"] != true {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	cfg := &Config{
+		Providers:   []Provider{{Name: "fake", BaseURL: upstream.URL}},
+		Panel:       []PanelEntry{{Provider: "fake", Model: "panel"}},
+		Synthesizer: Synthesizer{Provider: "fake", Model: "agent-model"},
+	}
+	ts := httptest.NewServer(NewServer(cfg).Handler())
 	defer ts.Close()
 
 	reqBody := ChatCompletionRequest{
@@ -198,23 +224,80 @@ func TestStreamUnsupported(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected 400 for stream=true, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 for stream passthrough, got %d: %s", resp.StatusCode, string(data))
 	}
 	if resp.Header.Get("X-Request-ID") == "" {
 		t.Error("expected X-Request-ID header")
 	}
+	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("expected text/event-stream content type, got %q", resp.Header.Get("Content-Type"))
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read stream body: %v", err)
+	}
+	if !strings.Contains(string(data), "data:") || !strings.Contains(string(data), "[DONE]") {
+		t.Fatalf("expected SSE body, got %q", string(data))
+	}
+}
 
-	var errResp ErrorResponse
-	if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
-		t.Fatalf("decode error response: %v", err)
+func TestToolRequestPassthroughPreservesAgentFields(t *testing.T) {
+	var upstreamReq map[string]json.RawMessage
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&upstreamReq); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","created":1,"model":"agent-model","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
+	}))
+	defer upstream.Close()
+
+	cfg := &Config{
+		Providers:   []Provider{{Name: "fake", BaseURL: upstream.URL}},
+		Panel:       []PanelEntry{{Provider: "fake", Model: "panel"}},
+		Synthesizer: Synthesizer{Provider: "fake", Model: "agent-model"},
+	}
+	ts := httptest.NewServer(NewServer(cfg).Handler())
+	defer ts.Close()
+
+	reqJSON := `{
+		"model":"local/fusion",
+		"messages":[{"role":"user","content":[{"type":"text","text":"read file"}]}],
+		"tools":[{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}],
+		"tool_choice":"auto",
+		"temperature":0.1
+	}`
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(reqJSON))
+	if err != nil {
+		t.Fatalf("POST /v1/chat/completions failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(data))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if !strings.Contains(string(body), "tool_calls") {
+		t.Fatalf("expected tool_calls response to be proxied, got %s", string(body))
 	}
 
-	if errResp.Error.Message != "streaming is not supported" {
-		t.Errorf("expected 'streaming is not supported' message, got %q", errResp.Error.Message)
+	for _, key := range []string{"tools", "tool_choice", "temperature"} {
+		if len(upstreamReq[key]) == 0 {
+			t.Fatalf("expected upstream request to preserve %s: %#v", key, upstreamReq)
+		}
 	}
-	if errResp.Error.RequestID == "" {
-		t.Error("expected request_id in error response")
+	var model string
+	if err := json.Unmarshal(upstreamReq["model"], &model); err != nil || model != "agent-model" {
+		t.Fatalf("expected upstream model agent-model, got %q err=%v", model, err)
+	}
+	if string(upstreamReq["code_research"]) != "" {
+		t.Fatalf("code_research should not be forwarded upstream")
 	}
 }
 

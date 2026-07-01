@@ -126,10 +126,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	debugRun.Model = req.Model
 	debugRun.Request = summarizeMessages(req.Messages, s.config.Debug.CaptureContent)
 
-	// Reject streaming — not supported.
-	if req.Stream {
-		status = http.StatusBadRequest
-		writeError(w, status, "streaming is not supported", runID)
+	if shouldPassthroughForAgent(&req) {
+		statusCode, err := s.fusionSvc.proxyChatCompletion(r.Context(), &req, w)
+		status = statusCode
+		if err != nil {
+			log.Printf("passthrough error for request %s: %v", runID, err)
+			writeError(w, status, err.Error(), runID)
+		}
 		return
 	}
 

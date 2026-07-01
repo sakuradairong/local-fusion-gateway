@@ -207,7 +207,7 @@ Current practical status:
 
 | Agent | Status |
 |---|---|
-| pi | Partial: OpenAI Chat Completions advisory/review use |
+| pi | Supported: OpenAI Chat Completions passthrough for tool/stream requests; Fusion for plain prompts |
 | omp | Partial: OpenAI Chat Completions advisory/review use |
 | OpenCode | Partial: simple OpenAI-compatible use, version-dependent |
 | Codex CLI | Future: needs `/v1/responses` |
@@ -232,9 +232,11 @@ Current practical status:
 
 ## Limitations
 
-- **No streaming support**: `stream: true` returns HTTP 400. This is a prototype focused on non-streaming completions.
-- **Single-turn only**: No context/history management beyond forwarding the message array.
-- **No OpenAI tool/function-calling protocol**: `code_research` uses a gateway-owned JSON text protocol for controlled read-only tools instead of provider-native `tool_calls`.
+- **Fusion path is non-streaming**: plain Fusion requests are non-streaming; `stream: true` enters agent passthrough mode and proxies upstream SSE.
+- **Single-turn Fusion**: Fusion mode has no context/history management beyond forwarding the message array.
+- **Agent passthrough is single-model**: requests with `tools`, `tool_choice`, tool messages, `tool_calls`, or `stream: true` bypass multi-model Fusion and proxy to the configured synthesizer model so external agents such as pi can own the tool loop.
+- **No OpenAI Responses / Anthropic Messages yet**: Codex CLI and Claude Code need additional endpoints.
+- **Code research protocol is gateway-owned**: `code_research` uses a JSON text protocol for controlled read-only tools instead of provider-native `tool_calls`.
 - **Token estimation**: Usage statistics use a rough heuristic (4 characters ≈ 1 token).
 - **No retries or circuit breaking**: Failed panel models are simply logged and omitted.
 
