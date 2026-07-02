@@ -6,13 +6,20 @@ A local OpenAI-compatible Chat Completions gateway that fans out a single `/v1/c
 
 - OpenAI-compatible HTTP API (`/v1/chat/completions`, `/v1/models`, `/health`)
 - Parallel fan-out to configurable panel models
-- Synthesizer model merges panel results with a structured prompt (consensus, conflicts, omissions, final answer)
+- Named Fusion presets exposed as `virtual_model/<preset>` for multiple MoA
+  panels
+- Synthesizer model merges panel results with a structured prompt (consensus,
+  conflicts, omissions, final answer)
+- Partial panel failures are passed to the synthesizer as sanitized
+  missing-perspective context instead of being silently omitted
 - Environment-variable-based upstream API key management (`api_key_env`)
 - Optional local bearer-token auth for gateway clients (`auth_token_env`)
 - Request body limits for chat completions (`max_body_bytes`, default 2 MiB)
 - Sanitized upstream error responses and request IDs (`X-Request-ID`)
-- Optional sanitized debug artifacts with hashes/lengths instead of full prompts by default
-- Optional `code_research` mode that lets panel models use controlled read-only local-code tools before answering
+- Optional sanitized debug artifacts with hashes/lengths instead of full prompts
+  by default
+- Optional `code_research` mode that lets panel models use controlled read-only
+  local-code tools before answering
 - YAML configuration
 - Minimal dependencies (stdlib-first, only `gopkg.in/yaml.v3`)
 
@@ -39,7 +46,33 @@ cp config.example.yaml config.yaml
 | `providers` | List of upstream LLM providers with name, `base_url`, and optional `api_key_env` |
 | `panel` | Models to query in parallel (each references a provider) |
 | `synthesizer` | Model used to synthesize panel outputs |
+| `default_preset` | Optional preset name used when clients request `virtual_model`. |
+| `presets` | Optional named panel/synthesizer configs exposed as `virtual_model/<name>`. |
 | `agent_profiles.pi` | Optional dedicated passthrough provider/model for pi-style agent tool/stream requests. If omitted, the synthesizer target is used. |
+
+### Named Fusion Presets
+
+Named presets let one gateway expose multiple Hermes-style MoA panels. Each
+preset has its own `panel` and `synthesizer` and appears in `/v1/models` as
+`<virtual_model>/<preset>`, for example `local/fusion/review`.
+
+```yaml
+default_preset: "review"
+presets:
+  review:
+    panel:
+      - provider: "openrouter"
+        model: "openai/gpt-4o"
+      - provider: "openrouter"
+        model: "anthropic/claude-sonnet-4-20250514"
+    synthesizer:
+      provider: "openrouter"
+      model: "openai/gpt-4o"
+```
+
+Requests for `local/fusion/review` use that preset explicitly. Requests for
+`local/fusion` use `default_preset` when it is set, otherwise they use the
+legacy top-level `panel` and `synthesizer`.
 
 ### API Keys via Environment Variables
 
@@ -194,7 +227,6 @@ curl -s http://localhost:8080/v1/chat/completions \
   }' | jq .
 ```
 
-
 ## Coding Agent Integration
 
 This project can already be used as an advisory/review model for coding agents through its OpenAI-compatible `/v1/chat/completions` endpoint and `code_research` mode.
@@ -233,13 +265,24 @@ Current practical status:
 
 ## Limitations
 
-- **Fusion path is non-streaming**: plain Fusion requests are non-streaming; `stream: true` enters agent passthrough mode and proxies upstream SSE.
-- **Single-turn Fusion**: Fusion mode has no context/history management beyond forwarding the message array.
-- **Agent passthrough is single-model**: requests with `tools`, `tool_choice`, tool messages, `tool_calls`, or `stream: true` bypass multi-model Fusion and proxy to the configured synthesizer model so external agents such as pi can own the tool loop.
-- **No OpenAI Responses / Anthropic Messages yet**: Codex CLI and Claude Code need additional endpoints.
-- **Code research protocol is gateway-owned**: `code_research` uses a JSON text protocol for controlled read-only tools instead of provider-native `tool_calls`.
-- **Token estimation**: Usage statistics use a rough heuristic (4 characters ≈ 1 token).
-- **No retries or circuit breaking**: Failed panel models are simply logged and omitted.
+- **Fusion path is non-streaming**: plain Fusion requests are non-streaming;
+  `stream: true` enters agent passthrough mode and proxies upstream SSE.
+- **Single-turn Fusion**: Fusion mode has no context/history management beyond
+  forwarding the message array.
+- **Agent passthrough is single-model**: requests with `tools`, `tool_choice`,
+  tool messages, `tool_calls`, or `stream: true` bypass multi-model Fusion and
+  proxy to the configured synthesizer model so external agents such as pi can
+  own the tool loop.
+- **No OpenAI Responses / Anthropic Messages yet**: Codex CLI and Claude Code
+  need additional endpoints.
+- **Code research protocol is gateway-owned**: `code_research` uses a JSON text
+  protocol for controlled read-only tools instead of provider-native
+  `tool_calls`.
+- **Token estimation**: Usage statistics use a rough heuristic
+  (4 characters ≈ 1 token).
+- **No retries or circuit breaking**: Failed panel models are surfaced to the
+  synthesizer as sanitized missing-perspective context, but the gateway does not
+  retry or route around them.
 
 ## Architecture
 

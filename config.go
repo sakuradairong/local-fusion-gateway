@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -11,16 +12,18 @@ const defaultMaxBodyBytes int64 = 2 * 1024 * 1024
 
 // Config holds all configuration for the fusion gateway.
 type Config struct {
-	Listen         string        `yaml:"listen"`
-	VirtualModel   string        `yaml:"virtual_model"`
-	TimeoutSeconds int           `yaml:"timeout_seconds"`
-	AuthTokenEnv   string        `yaml:"auth_token_env"`
-	MaxBodyBytes   int64         `yaml:"max_body_bytes"`
-	Debug          DebugConfig   `yaml:"debug"`
-	AgentProfiles  AgentProfiles `yaml:"agent_profiles"`
-	Providers      []Provider    `yaml:"providers"`
-	Panel          []PanelEntry  `yaml:"panel"`
-	Synthesizer    Synthesizer   `yaml:"synthesizer"`
+	Listen         string                  `yaml:"listen"`
+	VirtualModel   string                  `yaml:"virtual_model"`
+	TimeoutSeconds int                     `yaml:"timeout_seconds"`
+	AuthTokenEnv   string                  `yaml:"auth_token_env"`
+	MaxBodyBytes   int64                   `yaml:"max_body_bytes"`
+	Debug          DebugConfig             `yaml:"debug"`
+	AgentProfiles  AgentProfiles           `yaml:"agent_profiles"`
+	Providers      []Provider              `yaml:"providers"`
+	Panel          []PanelEntry            `yaml:"panel"`
+	Synthesizer    Synthesizer             `yaml:"synthesizer"`
+	DefaultPreset  string                  `yaml:"default_preset"`
+	Presets        map[string]FusionPreset `yaml:"presets"`
 }
 
 // DebugConfig controls optional per-request debug artifacts.
@@ -64,6 +67,12 @@ type PanelEntry struct {
 type Synthesizer struct {
 	Provider string `yaml:"provider"`
 	Model    string `yaml:"model"`
+}
+
+// FusionPreset defines a named panel/synthesizer configuration.
+type FusionPreset struct {
+	Panel       []PanelEntry `yaml:"panel"`
+	Synthesizer Synthesizer  `yaml:"synthesizer"`
 }
 
 // WithDefaults returns a copy of the configuration with default values applied.
@@ -147,22 +156,86 @@ func (c *Config) Validate() error {
 	for _, p := range c.Providers {
 		knownProviders[p.Name] = true
 	}
-	for _, pe := range c.Panel {
-		if !knownProviders[pe.Provider] {
-			return fmt.Errorf("panel references unknown provider %q", pe.Provider)
-		}
-		if pe.Model == "" {
-			return fmt.Errorf("panel entry for provider %q has no model", pe.Provider)
+	if err := validateFusionTarget("config", c.Panel, c.Synthesizer, knownProviders); err != nil {
+		return err
+	}
+	if c.DefaultPreset != "" {
+		if _, ok := c.Presets[c.DefaultPreset]; !ok {
+			return fmt.Errorf("default preset %q is not defined", c.DefaultPreset)
 		}
 	}
-	if !knownProviders[c.Synthesizer.Provider] {
-		return fmt.Errorf("synthesizer references unknown provider %q", c.Synthesizer.Provider)
-	}
-	if c.Synthesizer.Model == "" {
-		return fmt.Errorf("synthesizer has no model set")
+	for name, preset := range c.Presets {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("preset name cannot be empty")
+		}
+		if strings.Contains(name, "/") {
+			return fmt.Errorf("preset %q cannot contain '/'", name)
+		}
+		if err := validateFusionTarget("preset "+name, preset.Panel, preset.Synthesizer, knownProviders); err != nil {
+			return err
+		}
 	}
 	if err := validateAgentProfile("pi", c.AgentProfiles.Pi, knownProviders); err != nil {
 		return err
+	}
+	return nil
+}
+
+// FusionConfigForModel returns a copy of the config with the preset selected by
+// the requested model. The base virtual model uses default_preset when set;
+// virtual_model/<preset> selects that named preset explicitly.
+func (c *Config) FusionConfigForModel(model string) (*Config, error) {
+	cfg := c.WithDefaults()
+	cfg.Presets = copyFusionPresets(cfg.Presets)
+	presetName := ""
+	if model == cfg.VirtualModel {
+		presetName = cfg.DefaultPreset
+	} else if strings.HasPrefix(model, cfg.VirtualModel+"/") {
+		presetName = strings.TrimPrefix(model, cfg.VirtualModel+"/")
+	}
+	if presetName == "" {
+		return &cfg, nil
+	}
+	preset, ok := cfg.Presets[presetName]
+	if !ok {
+		return nil, fmt.Errorf("unknown fusion preset %q", presetName)
+	}
+	cfg.Panel = append([]PanelEntry(nil), preset.Panel...)
+	cfg.Synthesizer = preset.Synthesizer
+	return &cfg, nil
+}
+
+func copyFusionPresets(presets map[string]FusionPreset) map[string]FusionPreset {
+	if presets == nil {
+		return nil
+	}
+	copied := make(map[string]FusionPreset, len(presets))
+	for name, preset := range presets {
+		copied[name] = FusionPreset{
+			Panel:       append([]PanelEntry(nil), preset.Panel...),
+			Synthesizer: preset.Synthesizer,
+		}
+	}
+	return copied
+}
+
+func validateFusionTarget(name string, panel []PanelEntry, synthesizer Synthesizer, knownProviders map[string]bool) error {
+	if len(panel) == 0 {
+		return fmt.Errorf("%s: at least one panel entry is required", name)
+	}
+	for _, pe := range panel {
+		if !knownProviders[pe.Provider] {
+			return fmt.Errorf("%s panel references unknown provider %q", name, pe.Provider)
+		}
+		if pe.Model == "" {
+			return fmt.Errorf("%s panel entry for provider %q has no model", name, pe.Provider)
+		}
+	}
+	if !knownProviders[synthesizer.Provider] {
+		return fmt.Errorf("%s synthesizer references unknown provider %q", name, synthesizer.Provider)
+	}
+	if synthesizer.Model == "" {
+		return fmt.Errorf("%s synthesizer has no model set", name)
 	}
 	return nil
 }

@@ -72,6 +72,119 @@ synthesizer:
 	}
 }
 
+func TestLoadConfigPresets(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	content := `
+providers:
+  - name: "p1"
+    base_url: "http://localhost:8080/v1"
+
+panel:
+  - provider: "p1"
+    model: "base-panel"
+
+synthesizer:
+  provider: "p1"
+  model: "base-synth"
+
+default_preset: "review"
+presets:
+  review:
+    panel:
+      - provider: "p1"
+        model: "review-panel"
+    synthesizer:
+      provider: "p1"
+      model: "review-synth"
+  code:
+    panel:
+      - provider: "p1"
+        model: "code-panel"
+    synthesizer:
+      provider: "p1"
+      model: "code-synth"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	if cfg.DefaultPreset != "review" {
+		t.Errorf("expected default preset review, got %q", cfg.DefaultPreset)
+	}
+	if len(cfg.Presets) != 2 {
+		t.Fatalf("expected 2 presets, got %d", len(cfg.Presets))
+	}
+	if got := cfg.Presets["review"].Panel[0].Model; got != "review-panel" {
+		t.Errorf("expected review-panel, got %q", got)
+	}
+	if got := cfg.Presets["code"].Synthesizer.Model; got != "code-synth" {
+		t.Errorf("expected code-synth, got %q", got)
+	}
+}
+
+func TestFusionConfigForModelDoesNotAliasPresets(t *testing.T) {
+	cfg := &Config{
+		VirtualModel:  "local/fusion",
+		Providers:     []Provider{{Name: "p1", BaseURL: "http://localhost:8080/v1"}},
+		Panel:         []PanelEntry{{Provider: "p1", Model: "base-panel"}},
+		Synthesizer:   Synthesizer{Provider: "p1", Model: "base-synth"},
+		DefaultPreset: "review",
+		Presets: map[string]FusionPreset{
+			"review": {Panel: []PanelEntry{{Provider: "p1", Model: "review-panel"}}, Synthesizer: Synthesizer{Provider: "p1", Model: "review-synth"}},
+		},
+	}
+
+	resolved, err := cfg.FusionConfigForModel("local/fusion")
+	if err != nil {
+		t.Fatalf("FusionConfigForModel failed: %v", err)
+	}
+	resolved.Presets["review"] = FusionPreset{Panel: []PanelEntry{{Provider: "p1", Model: "mutated"}}, Synthesizer: Synthesizer{Provider: "p1", Model: "mutated"}}
+
+	if got := cfg.Presets["review"].Panel[0].Model; got != "review-panel" {
+		t.Fatalf("expected original config presets to remain immutable, got %q", got)
+	}
+}
+
+func TestConfigValidatePresetReferences(t *testing.T) {
+	base := Config{
+		Providers:   []Provider{{Name: "p1", BaseURL: "http://localhost:8080/v1"}},
+		Panel:       []PanelEntry{{Provider: "p1", Model: "m1"}},
+		Synthesizer: Synthesizer{Provider: "p1", Model: "s1"},
+	}
+
+	unknownDefault := base
+	unknownDefault.DefaultPreset = "missing"
+	unknownDefault.Presets = map[string]FusionPreset{
+		"review": {Panel: []PanelEntry{{Provider: "p1", Model: "m2"}}, Synthesizer: Synthesizer{Provider: "p1", Model: "s2"}},
+	}
+	if err := unknownDefault.Validate(); err == nil {
+		t.Fatal("expected error for unknown default preset")
+	}
+
+	unknownProvider := base
+	unknownProvider.Presets = map[string]FusionPreset{
+		"review": {Panel: []PanelEntry{{Provider: "missing", Model: "m2"}}, Synthesizer: Synthesizer{Provider: "p1", Model: "s2"}},
+	}
+	if err := unknownProvider.Validate(); err == nil {
+		t.Fatal("expected error for preset panel unknown provider")
+	}
+
+	missingSynthModel := base
+	missingSynthModel.Presets = map[string]FusionPreset{
+		"review": {Panel: []PanelEntry{{Provider: "p1", Model: "m2"}}, Synthesizer: Synthesizer{Provider: "p1"}},
+	}
+	if err := missingSynthModel.Validate(); err == nil {
+		t.Fatal("expected error for preset synthesizer missing model")
+	}
+}
+
 func TestLoadConfigDefaults(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")

@@ -54,6 +54,13 @@ func (f *FusionService) ProcessWithRun(ctx context.Context, req *ChatCompletionR
 		return nil, debugRun, errors.New("messages array is empty")
 	}
 
+	activeConfig, err := f.config.FusionConfigForModel(req.Model)
+	if err != nil {
+		return nil, debugRun, err
+	}
+	activeService := *f
+	activeService.config = activeConfig
+
 	var researchConfig *CodeResearchConfig
 	if req.CodeResearch != nil && req.CodeResearch.Enabled {
 		debugRun.CodeResearch = DebugCodeResearchRun{
@@ -80,8 +87,8 @@ func (f *FusionService) ProcessWithRun(ctx context.Context, req *ChatCompletionR
 	}
 
 	// Phase 1: Query all panel models in parallel.
-	results := f.queryPanel(ctx, req, researchConfig)
-	debugRun.Panel = summarizePanelResults(results, f.config.Debug.CaptureContent)
+	results := activeService.queryPanel(ctx, req, researchConfig)
+	debugRun.Panel = summarizePanelResults(results, activeConfig.Debug.CaptureContent)
 	if researchConfig != nil {
 		debugRun.CodeResearch.Panels = summarizeCodeResearchPanels(results)
 	}
@@ -113,7 +120,9 @@ func (f *FusionService) ProcessWithRun(ctx context.Context, req *ChatCompletionR
 	log.Printf("panel results: %d succeeded, %d failed", len(successes), len(failures))
 
 	// Phase 2: Build synthesizer prompt and call synthesizer.
-	synthResp, synthSummary, err := f.synthesize(ctx, req, successes)
+	// Pass all panel results, including sanitized failures, so the synthesizer
+	// can reason about missing perspectives instead of silently ignoring them.
+	synthResp, synthSummary, err := activeService.synthesize(ctx, req, results)
 	debugRun.Synthesizer = synthSummary
 	if err != nil {
 		return nil, debugRun, fmt.Errorf("synthesis failed: %w", err)
@@ -289,8 +298,17 @@ func buildSynthesizerPrompt(userMessages []Message, panelResults []panelResult) 
 	sb.WriteString("\nPANEL MODEL RESPONSES:\n")
 	for i, r := range panelResults {
 		sb.WriteString(fmt.Sprintf("--- Model %d: %s/%s ---\n", i+1, r.Provider, r.Model))
-		sb.WriteString(r.Content)
-		sb.WriteString("\n\n")
+		if r.Err != nil {
+			sb.WriteString("[FAILED] This model did not return usable content; treat it as a missing perspective, not as evidence.\n")
+			if r.StatusCode > 0 {
+				sb.WriteString(fmt.Sprintf("Status: %d\n", r.StatusCode))
+			}
+			sb.WriteString(fmt.Sprintf("Error: %s\n", sanitizePanelFailureError(r.Err)))
+		} else {
+			sb.WriteString(r.Content)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
 	}
 
 	sb.WriteString("INSTRUCTIONS:\n")
@@ -302,4 +320,74 @@ func buildSynthesizerPrompt(userMessages []Message, panelResults []panelResult) 
 	sb.WriteString("Please structure your response with these four sections clearly labeled.")
 
 	return sb.String()
+}
+
+const maxPanelFailureErrorLength = 500
+
+func sanitizePanelFailureError(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := normalizePanelFailureError(err.Error())
+	lower := strings.ToLower(message)
+	if status := extractStatusSummary(lower); status != "" {
+		return status
+	}
+	if strings.Contains(lower, "unknown provider") {
+		return "unknown provider"
+	}
+	if strings.Contains(lower, "returned no choices") {
+		return "upstream returned no choices"
+	}
+	if strings.Contains(lower, "parse upstream response") {
+		return "failed to parse upstream response"
+	}
+	if strings.Contains(lower, "read upstream response") {
+		return "failed to read upstream response"
+	}
+	if strings.Contains(lower, "marshal request") {
+		return "failed to marshal upstream request"
+	}
+	if strings.Contains(lower, "create request") {
+		return "failed to create upstream request"
+	}
+	if strings.Contains(lower, "upstream request failed") {
+		return "upstream request failed"
+	}
+	if len(message) > maxPanelFailureErrorLength {
+		return message[:maxPanelFailureErrorLength] + "... [truncated]"
+	}
+	return message
+}
+
+func normalizePanelFailureError(message string) string {
+	normalized := strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\r', '\t':
+			return ' '
+		default:
+			if r < 0x20 || r == 0x7f {
+				return ' '
+			}
+			return r
+		}
+	}, message)
+	return strings.Join(strings.Fields(normalized), " ")
+}
+
+func extractStatusSummary(message string) string {
+	const marker = "status "
+	idx := strings.Index(message, marker)
+	if idx < 0 {
+		return ""
+	}
+	start := idx + len(marker)
+	end := start
+	for end < len(message) && message[end] >= '0' && message[end] <= '9' {
+		end++
+	}
+	if end == start {
+		return ""
+	}
+	return "upstream returned status " + message[start:end]
 }

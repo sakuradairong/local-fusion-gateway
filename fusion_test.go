@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -120,6 +121,85 @@ type fakeResponse struct {
 	Content    string
 	StatusCode int
 	Body       string
+}
+
+func TestFusionUsesRequestedPreset(t *testing.T) {
+	upstream := newFakeUpstreamByModel(map[string]fakeResponse{
+		"base-panel":   {Content: "base panel should not be used"},
+		"base-synth":   {Content: "base synth should not be used"},
+		"review-panel": {Content: "Review panel says use missing perspective context."},
+		"review-synth": {Content: "Review preset synthesized answer."},
+	})
+	defer upstream.Close()
+
+	cfg := &Config{
+		VirtualModel:   "local/fusion",
+		TimeoutSeconds: 10,
+		Providers:      []Provider{{Name: "fake", BaseURL: upstream.URL}},
+		Panel:          []PanelEntry{{Provider: "fake", Model: "base-panel"}},
+		Synthesizer:    Synthesizer{Provider: "fake", Model: "base-synth"},
+		Presets: map[string]FusionPreset{
+			"review": {
+				Panel:       []PanelEntry{{Provider: "fake", Model: "review-panel"}},
+				Synthesizer: Synthesizer{Provider: "fake", Model: "review-synth"},
+			},
+		},
+	}
+	req := &ChatCompletionRequest{
+		Model:    "local/fusion/review",
+		Messages: []Message{{Role: "user", Content: "Run review preset"}},
+	}
+
+	resp, err := NewFusionService(cfg).Process(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Process failed: %v", err)
+	}
+	if got := resp.Choices[0].Message.Content; got != "Review preset synthesized answer." {
+		t.Fatalf("expected review preset synth response, got %q", got)
+	}
+	if resp.Model != "local/fusion/review" {
+		t.Fatalf("expected response model local/fusion/review, got %q", resp.Model)
+	}
+}
+
+func TestFusionUsesDefaultPresetForVirtualModel(t *testing.T) {
+	upstream := newFakeUpstreamByModel(map[string]fakeResponse{
+		"base-panel":   {Content: "base panel should not be used"},
+		"base-synth":   {Content: "base synth should not be used"},
+		"review-panel": {Content: "Review panel response."},
+		"review-synth": {Content: "Default preset synthesized answer."},
+	})
+	defer upstream.Close()
+
+	cfg := &Config{
+		VirtualModel:   "local/fusion",
+		TimeoutSeconds: 10,
+		DefaultPreset:  "review",
+		Providers:      []Provider{{Name: "fake", BaseURL: upstream.URL}},
+		Panel:          []PanelEntry{{Provider: "fake", Model: "base-panel"}},
+		Synthesizer:    Synthesizer{Provider: "fake", Model: "base-synth"},
+		Presets: map[string]FusionPreset{
+			"review": {
+				Panel:       []PanelEntry{{Provider: "fake", Model: "review-panel"}},
+				Synthesizer: Synthesizer{Provider: "fake", Model: "review-synth"},
+			},
+		},
+	}
+	req := &ChatCompletionRequest{
+		Model:    "local/fusion",
+		Messages: []Message{{Role: "user", Content: "Use default preset"}},
+	}
+
+	resp, err := NewFusionService(cfg).Process(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Process failed: %v", err)
+	}
+	if got := resp.Choices[0].Message.Content; got != "Default preset synthesized answer." {
+		t.Fatalf("expected default preset synth response, got %q", got)
+	}
+	if resp.Model != "local/fusion" {
+		t.Fatalf("expected response model local/fusion, got %q", resp.Model)
+	}
 }
 
 func TestFusionAllPanelsSucceed(t *testing.T) {
@@ -252,6 +332,67 @@ func TestFusionPartialSuccess(t *testing.T) {
 	}
 }
 
+func TestFusionPartialSuccessSendsFailuresToSynthesizer(t *testing.T) {
+	var capturedSynthPrompt string
+	var mu sync.Mutex
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req ChatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		switch req.Model {
+		case "model-broken":
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte("temporarily unavailable"))
+		case "model-ok":
+			json.NewEncoder(w).Encode(upstreamResponse{Choices: []upstreamChoice{{Message: Message{Role: "assistant", Content: "The answer is 42."}}}})
+		case "model-synth":
+			mu.Lock()
+			if len(req.Messages) > 0 {
+				capturedSynthPrompt = req.Messages[0].Content
+			}
+			mu.Unlock()
+			json.NewEncoder(w).Encode(upstreamResponse{Choices: []upstreamChoice{{Message: Message{Role: "assistant", Content: "Synthesized: The answer is 42."}}}})
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer upstream.Close()
+
+	cfg := &Config{
+		VirtualModel:   "local/fusion",
+		TimeoutSeconds: 10,
+		Providers:      []Provider{{Name: "fake", BaseURL: upstream.URL}},
+		Panel: []PanelEntry{
+			{Provider: "fake", Model: "model-broken"},
+			{Provider: "fake", Model: "model-ok"},
+		},
+		Synthesizer: Synthesizer{Provider: "fake", Model: "model-synth"},
+	}
+	req := &ChatCompletionRequest{
+		Model:    "local/fusion",
+		Messages: []Message{{Role: "user", Content: "What is the answer to everything?"}},
+	}
+
+	_, err := NewFusionService(cfg).Process(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Process should succeed with partial panel success: %v", err)
+	}
+
+	mu.Lock()
+	prompt := capturedSynthPrompt
+	mu.Unlock()
+	required := []string{"model-broken", "FAILED", "Status: 503", "missing perspective", "The answer is 42."}
+	for _, keyword := range required {
+		if !strings.Contains(prompt, keyword) {
+			t.Errorf("synthesizer prompt missing %q\nPrompt:\n%s", keyword, prompt)
+		}
+	}
+}
+
 func TestFusionEmptyMessages(t *testing.T) {
 	cfg := &Config{
 		VirtualModel:   "local/fusion",
@@ -306,6 +447,49 @@ func TestFusionSynthesizerPrompt(t *testing.T) {
 		if !strings.Contains(prompt, keyword) {
 			t.Errorf("synthesizer prompt missing expected keyword: %q\nPrompt:\n%s", keyword, prompt)
 		}
+	}
+}
+
+func TestBuildSynthesizerPromptIncludesPanelFailures(t *testing.T) {
+	panelResults := []panelResult{
+		{Provider: "p1", Model: "m1", Content: "The sky is blue."},
+		{Provider: "p2", Model: "m2", StatusCode: http.StatusUnauthorized, Err: errors.New("upstream p2/m2 returned status 401")},
+	}
+	userMessages := []Message{
+		{Role: "user", Content: "Why is the sky blue?"},
+	}
+
+	prompt := buildSynthesizerPrompt(userMessages, panelResults)
+
+	required := []string{
+		"p1/m1",
+		"The sky is blue.",
+		"p2/m2",
+		"FAILED",
+		"status 401",
+		"missing perspective",
+	}
+	for _, keyword := range required {
+		if !strings.Contains(prompt, keyword) {
+			t.Errorf("synthesizer prompt missing expected failure keyword: %q\nPrompt:\n%s", keyword, prompt)
+		}
+	}
+}
+
+func TestBuildSynthesizerPromptSanitizesPanelFailureErrors(t *testing.T) {
+	panelResults := []panelResult{
+		{Provider: "p1", Model: "m1", Err: errors.New("upstream request failed for p1/m1: dial tcp api.internal.example.com:443: connection refused")},
+	}
+
+	prompt := buildSynthesizerPrompt([]Message{{Role: "user", Content: "hello"}}, panelResults)
+
+	for _, forbidden := range []string{"api.internal.example.com", "connection refused", "dial tcp"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Errorf("expected panel failure prompt to redact %q; prompt:\n%s", forbidden, prompt)
+		}
+	}
+	if !strings.Contains(prompt, "upstream request failed") {
+		t.Errorf("expected generic upstream request failure; prompt:\n%s", prompt)
 	}
 }
 

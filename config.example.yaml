@@ -55,3 +55,18 @@ panel:
 synthesizer:
   provider: "openrouter"
   model: "openai/gpt-4o"
+
+# Optional Hermes-style named Fusion presets. Each preset appears from
+# /v1/models as virtual_model/<name>, for example local/fusion/review.
+# Set default_preset to make requests for virtual_model use that preset.
+# default_preset: "review"
+# presets:
+#   review:
+#     panel:
+#       - provider: "openrouter"
+#         model: "openai/gpt-4o"
+#       - provider: "openrouter"
+#         model: "anthropic/claude-sonnet-4-20250514"
+#     synthesizer:
+#       provider: "openrouter"
+#       model: "openai/gpt-4o"

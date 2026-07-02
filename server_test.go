@@ -66,6 +66,12 @@ func TestModelsEndpoint(t *testing.T) {
 			{Provider: "openrouter", Model: "gpt-4o"},
 		},
 		Synthesizer: Synthesizer{Provider: "ollama", Model: "llama3"},
+		Presets: map[string]FusionPreset{
+			"review": {
+				Panel:       []PanelEntry{{Provider: "openrouter", Model: "claude-sonnet"}},
+				Synthesizer: Synthesizer{Provider: "openrouter", Model: "gpt-4o"},
+			},
+		},
 	}
 	srv := NewServer(cfg)
 	ts := httptest.NewServer(srv.Handler())
@@ -90,18 +96,21 @@ func TestModelsEndpoint(t *testing.T) {
 		t.Errorf("expected list, got %q", body.Object)
 	}
 
-	// Should include virtual model, panel model, and synthesizer model.
+	// Should include virtual model, preset model, panel model, and synthesizer model.
 	if len(body.Data) < 1 {
 		t.Error("expected at least 1 model")
 	}
 
 	foundVirtual := false
+	foundPreset := false
 	foundPanel := false
 	foundSynth := false
 	for _, m := range body.Data {
 		switch m.ID {
 		case "my-fusion/v2":
 			foundVirtual = true
+		case "my-fusion/v2/review":
+			foundPreset = true
 		case "openrouter/gpt-4o":
 			foundPanel = true
 		case "ollama/llama3":
@@ -111,6 +120,9 @@ func TestModelsEndpoint(t *testing.T) {
 
 	if !foundVirtual {
 		t.Error("virtual model not found in model list")
+	}
+	if !foundPreset {
+		t.Error("preset model not found in model list")
 	}
 	if !foundPanel {
 		t.Error("panel model not found in model list")

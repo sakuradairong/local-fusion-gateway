@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -67,20 +68,36 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		{ID: s.config.VirtualModel, Object: "model", OwnedBy: "local-fusion"},
 	}
 
-	// Add panel models.
-	seen := make(map[string]bool)
-	for _, pe := range s.config.Panel {
-		id := fmt.Sprintf("%s/%s", pe.Provider, pe.Model)
+	seen := map[string]bool{s.config.VirtualModel: true}
+	presetNames := make([]string, 0, len(s.config.Presets))
+	for name := range s.config.Presets {
+		presetNames = append(presetNames, name)
+	}
+	sort.Strings(presetNames)
+	for _, name := range presetNames {
+		id := s.config.VirtualModel + "/" + name
+		seen[id] = true
+		models = append(models, modelEntry{ID: id, Object: "model", OwnedBy: "local-fusion"})
+	}
+
+	addModel := func(provider, model string) {
+		id := fmt.Sprintf("%s/%s", provider, model)
 		if !seen[id] {
 			seen[id] = true
-			models = append(models, modelEntry{ID: id, Object: "model", OwnedBy: pe.Provider})
+			models = append(models, modelEntry{ID: id, Object: "model", OwnedBy: provider})
 		}
 	}
 
-	// Add synthesizer model.
-	synthID := fmt.Sprintf("%s/%s", s.config.Synthesizer.Provider, s.config.Synthesizer.Model)
-	if !seen[synthID] {
-		models = append(models, modelEntry{ID: synthID, Object: "model", OwnedBy: s.config.Synthesizer.Provider})
+	for _, pe := range s.config.Panel {
+		addModel(pe.Provider, pe.Model)
+	}
+	addModel(s.config.Synthesizer.Provider, s.config.Synthesizer.Model)
+	for _, name := range presetNames {
+		preset := s.config.Presets[name]
+		for _, pe := range preset.Panel {
+			addModel(pe.Provider, pe.Model)
+		}
+		addModel(preset.Synthesizer.Provider, preset.Synthesizer.Model)
 	}
 
 	writeJSON(w, http.StatusOK, modelList{Object: "list", Data: models})
